@@ -1,8 +1,14 @@
+// Copyright 2018 the Kurbo Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Affine transforms.
 
-use std::ops::{Mul, MulAssign};
+use core::ops::{Mul, MulAssign};
 
 use crate::{Point, Rect, Vec2};
+
+#[cfg(not(feature = "std"))]
+use crate::common::FloatFuncs;
 
 /// A 2D affine transform.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,11 +76,132 @@ impl Affine {
         Affine([c, s, -s, c, 0.0, 0.0])
     }
 
+    /// An affine transform representing a rotation of `th` radians about `center`.
+    ///
+    /// See [Affine::rotate] for more info.
+    #[inline]
+    pub fn rotate_about(th: f64, center: Point) -> Affine {
+        let center = center.to_vec2();
+        Self::translate(-center)
+            .then_rotate(th)
+            .then_translate(center)
+    }
+
     /// An affine transform representing translation.
     #[inline]
     pub fn translate<V: Into<Vec2>>(p: V) -> Affine {
         let p = p.into();
         Affine([1.0, 0.0, 0.0, 1.0, p.x, p.y])
+    }
+
+    /// An affine transformation representing a skew.
+    ///
+    /// The skew_x and skew_y parameters represent skew factors for the
+    /// horizontal and vertical directions, respectively.
+    ///
+    /// This is commonly used to generate a faux oblique transform for
+    /// font rendering. In this case, you can slant the glyph 20 degrees
+    /// clockwise in the horizontal direction (assuming a Y-up coordinate
+    /// system):
+    ///
+    /// ```
+    /// let oblique_transform = kurbo::Affine::skew(20f64.to_radians().tan(), 0.0);
+    /// ```
+    #[inline]
+    pub fn skew(skew_x: f64, skew_y: f64) -> Affine {
+        Affine([1.0, skew_y, skew_x, 1.0, 0.0, 0.0])
+    }
+
+    /// A rotation by `th` followed by `self`.
+    ///
+    /// Equivalent to `self * Affine::rotate(th)`
+    #[inline]
+    #[must_use]
+    pub fn pre_rotate(self, th: f64) -> Self {
+        self * Affine::rotate(th)
+    }
+
+    /// A rotation by `th` about `center` followed by `self`.
+    ///
+    /// Equivalent to `self * Affine::rotate_about(th)`
+    #[inline]
+    #[must_use]
+    pub fn pre_rotate_about(self, th: f64, center: Point) -> Self {
+        Affine::rotate_about(th, center) * self
+    }
+
+    /// A scale by `scale` followed by `self`.
+    ///
+    /// Equivalent to `self * Affine::scale(scale)`
+    #[inline]
+    #[must_use]
+    pub fn pre_scale(self, scale: f64) -> Self {
+        self * Affine::scale(scale)
+    }
+
+    /// A scale by `(scale_x, scale_y)` followed by `self`.
+    ///
+    /// Equivalent to `self * Affine::scale_non_uniform(scale_x, scale_y)`
+    #[inline]
+    #[must_use]
+    pub fn pre_scale_non_uniform(self, scale_x: f64, scale_y: f64) -> Self {
+        self * Affine::scale_non_uniform(scale_x, scale_y)
+    }
+
+    /// A translation of `trans` followed by `self`.
+    ///
+    /// Equivalent to `self * Affine::translate(trans)`
+    #[inline]
+    #[must_use]
+    pub fn pre_translate(self, trans: Vec2) -> Self {
+        self * Affine::translate(trans)
+    }
+
+    /// `self` followed by a rotation of `th`.
+    ///
+    /// Equivalent to `Affine::rotate(th) * self`
+    #[inline]
+    #[must_use]
+    pub fn then_rotate(self, th: f64) -> Self {
+        Affine::rotate(th) * self
+    }
+
+    /// `self` followed by a rotation of `th` about `center.
+    ///
+    /// Equivalent to `Affine::rotate_about(th, center) * self`
+    #[inline]
+    #[must_use]
+    pub fn then_rotate_about(self, th: f64, center: Point) -> Self {
+        Affine::rotate_about(th, center) * self
+    }
+
+    /// `self` followed by a scale of `scale`.
+    ///
+    /// Equivalent to `Affine::scale(scale) * self`
+    #[inline]
+    #[must_use]
+    pub fn then_scale(self, scale: f64) -> Self {
+        Affine::scale(scale) * self
+    }
+
+    /// `self` followed by a scale of `(scale_x, scale_y)`.
+    ///
+    /// Equivalent to `Affine::scale_non_uniform(scale_x, scale_y) * self`
+    #[inline]
+    #[must_use]
+    pub fn then_scale_non_uniform(self, scale_x: f64, scale_y: f64) -> Self {
+        Affine::scale_non_uniform(scale_x, scale_y) * self
+    }
+
+    /// `self` followed by a translation of `trans`.
+    ///
+    /// Equivalent to `Affine::translate(trans) * self`
+    #[inline]
+    #[must_use]
+    pub fn then_translate(mut self, trans: Vec2) -> Self {
+        self.0[4] += trans.x;
+        self.0[5] += trans.y;
+        self
     }
 
     /// Creates an affine transformation that takes the unit square to the given rectangle.
@@ -196,7 +323,7 @@ impl Affine {
 
     /// Returns the translation part of this affine map (`(self.0[4], self.0[5])`).
     #[inline]
-    pub(crate) fn get_translation(self) -> Vec2 {
+    pub fn translation(self) -> Vec2 {
         Vec2 {
             x: self.0[4],
             y: self.0[5],
@@ -204,8 +331,11 @@ impl Affine {
     }
 
     /// Replaces the translation portion of this affine map
+    ///
+    /// The translation can be seen as being applied after the linear part of the map.
     #[must_use]
-    pub(crate) fn set_translation(mut self, trans: Vec2) -> Affine {
+    #[inline]
+    pub fn with_translation(mut self, trans: Vec2) -> Affine {
         self.0[4] = trans.x;
         self.0[5] = trans.y;
         self
@@ -306,7 +436,7 @@ mod tests {
     use std::f64::consts::PI;
 
     fn assert_near(p0: Point, p1: Point) {
-        assert!((p1 - p0).hypot() < 1e-9, "{:?} != {:?}", p0, p1);
+        assert!((p1 - p0).hypot() < 1e-9, "{p0:?} != {p1:?}");
     }
 
     #[test]
@@ -318,6 +448,8 @@ mod tests {
         assert_near(Affine::rotate(0.0) * p, p);
         assert_near(Affine::rotate(PI / 2.0) * p, Point::new(-4.0, 3.0));
         assert_near(Affine::translate((5.0, 6.0)) * p, Point::new(8.0, 10.0));
+        assert_near(Affine::skew(0.0, 0.0) * p, p);
+        assert_near(Affine::skew(2.0, 4.0) * p, Point::new(11.0, 16.0));
     }
 
     #[test]

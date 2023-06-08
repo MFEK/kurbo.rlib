@@ -1,4 +1,4 @@
-// Copyright 2022 The kurbo Authors.
+// Copyright 2022 The Kurbo Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,10 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Offset curve computation.
-//! Currently work in progress.
+//! Computation of offset curves of cubic Béziers, based on a curve fitting
+//! approach.
+//!
+//! See the [Parallel curves of cubic Béziers] blog post for a discussion of how
+//! this algorithm works and what kind of results can be expected. In general, it
+//! is expected to perform much better than most published algorithms. The number
+//! of curve segments needed to attain a given accuracy scales as O(n^6) with
+//! accuracy.
+//!
+//! In general, to compute the offset curve (also known as parallel curve) of
+//! a cubic Bézier segment, create a [`CubicOffset`] struct with the curve
+//! segment and offset, then use [`fit_to_bezpath`] or [`fit_to_bezpath_opt`]
+//! depending on how much time to spend optimizing the resulting path.
+//!
+//! [`fit_to_bezpath`]: crate::fit_to_bezpath
+//! [`fit_to_bezpath_opt`]: crate::fit_to_bezpath_opt
+//! [Parallel curves of cubic Béziers]: https://raphlinus.github.io/curves/2022/09/09/parallel-beziers.html
+use core::ops::Range;
 
-use std::ops::Range;
+#[cfg(not(feature = "std"))]
+use crate::common::FloatFuncs;
 
 use crate::{
     common::solve_itp, CubicBez, CurveFitSample, ParamCurve, ParamCurveDeriv, ParamCurveFit, Point,
@@ -26,6 +43,11 @@ use crate::{
 ///
 /// This is a representation of the offset curve of a cubic Bézier segment, for
 /// purposes of curve fitting.
+///
+/// See the [module-level documentation] for a bit more discussion of the approach,
+/// and how this struct is to be used.
+///
+/// [module-level documentation]: crate::offset
 pub struct CubicOffset {
     /// Source curve.
     c: CubicBez,

@@ -1,8 +1,89 @@
+// Copyright 2018 the Kurbo Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Common mathematical operations
 
 #![allow(missing_docs)]
 
 use arrayvec::ArrayVec;
+
+/// Defines a trait that chooses between libstd or libm implementations of float methods.
+macro_rules! define_float_funcs {
+    ($(
+        fn $name:ident(self $(,$arg:ident: $arg_ty:ty)*) -> $ret:ty
+        => $lname:ident/$lfname:ident;
+    )+) => {
+        #[cfg(not(feature = "std"))]
+        pub(crate) trait FloatFuncs : Sized {
+            /// Special implementation for signum, because libm doesn't have it.
+            fn signum(self) -> Self;
+
+            $(fn $name(self $(,$arg: $arg_ty)*) -> $ret;)+
+        }
+
+        #[cfg(not(feature = "std"))]
+        impl FloatFuncs for f32 {
+            #[inline]
+            fn signum(self) -> f32 {
+                if self.is_nan() {
+                    f32::NAN
+                } else {
+                    1.0_f32.copysign(self)
+                }
+            }
+
+            $(fn $name(self $(,$arg: $arg_ty)*) -> $ret {
+                #[cfg(feature = "libm")]
+                return libm::$lfname(self $(,$arg as _)*);
+
+                #[cfg(not(feature = "libm"))]
+                compile_error!("kurbo requires either the `std` or `libm` feature")
+            })+
+        }
+
+        #[cfg(not(feature = "std"))]
+        impl FloatFuncs for f64 {
+            #[inline]
+            fn signum(self) -> f64 {
+                if self.is_nan() {
+                    f64::NAN
+                } else {
+                    1.0_f64.copysign(self)
+                }
+            }
+
+            $(fn $name(self $(,$arg: $arg_ty)*) -> $ret {
+                #[cfg(feature = "libm")]
+                return libm::$lname(self $(,$arg as _)*);
+
+                #[cfg(not(feature = "libm"))]
+                compile_error!("kurbo requires either the `std` or `libm` feature")
+            })+
+        }
+    }
+}
+
+define_float_funcs! {
+    fn abs(self) -> Self => fabs/fabsf;
+    fn acos(self) -> Self => acos/acosf;
+    fn atan2(self, other: Self) -> Self => atan2/atan2f;
+    fn cbrt(self) -> Self => cbrt/cbrtf;
+    fn ceil(self) -> Self => ceil/ceilf;
+    fn cos(self) -> Self => cos/cosf;
+    fn copysign(self, sign: Self) -> Self => copysign/copysignf;
+    fn floor(self) -> Self => floor/floorf;
+    fn hypot(self, other: Self) -> Self => hypot/hypotf;
+    fn ln(self) -> Self => log/logf;
+    fn log2(self) -> Self => log2/log2f;
+    fn mul_add(self, a: Self, b: Self) -> Self => fma/fmaf;
+    fn powi(self, n: i32) -> Self => pow/powf;
+    fn powf(self, n: Self) -> Self => pow/powf;
+    fn round(self) -> Self => round/roundf;
+    fn sin_cos(self) -> (Self, Self) => sincos/sincosf;
+    fn sqrt(self) -> Self => sqrt/sqrtf;
+    fn tan(self) -> Self => tan/tanf;
+    fn trunc(self) -> Self => trunc/truncf;
+}
 
 /// Adds convenience methods to `f32` and `f64`.
 pub trait FloatExt<T> {
@@ -371,8 +452,9 @@ pub fn factor_quartic_inner(
         }
         // TODO: handle case d_2 is very small?
     } else {
-        // I think this case means no real roots, return empty.
-        todo!()
+        // This case means no real roots; in the most general case we might want
+        // to factor into quadratic equations with complex coefficients.
+        return None;
     }
     // Newton-Raphson iteration on alpha/beta coeff's.
     let mut eps_t = calc_eps_t(alpha_1, beta_1, alpha_2, beta_2);
@@ -582,6 +664,56 @@ pub fn solve_itp(
         scaled_epsilon *= 0.5;
     }
     0.5 * (a + b)
+}
+
+/// A variant ITP solver that allows fallible functions.
+///
+/// Another difference: it returns the bracket that contains the root,
+/// which may be important if the function has a discontinuity.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_itp_fallible<E>(
+    mut f: impl FnMut(f64) -> Result<f64, E>,
+    mut a: f64,
+    mut b: f64,
+    epsilon: f64,
+    n0: usize,
+    k1: f64,
+    mut ya: f64,
+    mut yb: f64,
+) -> Result<(f64, f64), E> {
+    let n1_2 = (((b - a) / epsilon).log2().ceil() - 1.0).max(0.0) as usize;
+    let nmax = n0 + n1_2;
+    let mut scaled_epsilon = epsilon * (1u64 << nmax) as f64;
+    while b - a > 2.0 * epsilon {
+        let x1_2 = 0.5 * (a + b);
+        let r = scaled_epsilon - 0.5 * (b - a);
+        let xf = (yb * a - ya * b) / (yb - ya);
+        let sigma = x1_2 - xf;
+        // This has k2 = 2 hardwired for efficiency.
+        let delta = k1 * (b - a).powi(2);
+        let xt = if delta <= (x1_2 - xf).abs() {
+            xf + delta.copysign(sigma)
+        } else {
+            x1_2
+        };
+        let xitp = if (xt - x1_2).abs() <= r {
+            xt
+        } else {
+            x1_2 - r.copysign(sigma)
+        };
+        let yitp = f(xitp)?;
+        if yitp > 0.0 {
+            b = xitp;
+            yb = yitp;
+        } else if yitp < 0.0 {
+            a = xitp;
+            ya = yitp;
+        } else {
+            return Ok((xitp, xitp));
+        }
+        scaled_epsilon *= 0.5;
+    }
+    Ok((a, b))
 }
 
 // Tables of Legendre-Gauss quadrature coefficients, adapted from:
@@ -958,23 +1090,5 @@ mod tests {
             -target,
             c.arclen(1e-9) - target,
         );
-    }
-
-    #[test]
-    fn quux() {
-        fn test_vieta(x1: f64, x2: f64, x3: f64, x4: f64) {
-            let a = -(x1 + x2 + x3 + x4);
-            let b = x1 * (x2 + x3) + x2 * (x3 + x4) + x4 * (x1 + x3);
-            let c = -x1 * x2 * (x3 + x4) - x3 * x4 * (x1 + x2);
-            let d = x1 * x2 * x3 * x4;
-            let d = d + 1.0;
-            let c = c - 10.0;
-            let (a, b, c, d) = (1., 1., 3. / 8., 1e-1);
-            println!("coefs {} {} {} {}", a, b, c, d);
-            let mut actual = solve_quartic(d, c, b, a, 1.0);
-            println!("{:?}", actual);
-        }
-
-        test_vieta(1.0, 2.0, 3.0, 4.0);
     }
 }

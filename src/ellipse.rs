@@ -1,12 +1,18 @@
+// Copyright 2020 the Kurbo Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Implementation of ellipse shape.
 
-use std::f64::consts::PI;
-use std::{
+use core::f64::consts::PI;
+use core::{
     iter,
     ops::{Add, Mul, Sub},
 };
 
 use crate::{Affine, Arc, ArcAppendIter, Circle, PathEl, Point, Rect, Shape, Size, Vec2};
+
+#[cfg(not(feature = "std"))]
+use crate::common::FloatFuncs;
 
 /// An ellipse.
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -64,7 +70,7 @@ impl Ellipse {
     pub fn with_center(self, new_center: Point) -> Ellipse {
         let Point { x: cx, y: cy } = new_center;
         Ellipse {
-            inner: self.inner.set_translation(Vec2 { x: cx, y: cy }),
+            inner: self.inner.with_translation(Vec2 { x: cx, y: cy }),
         }
     }
 
@@ -72,7 +78,7 @@ impl Ellipse {
     #[must_use]
     pub fn with_radii(self, new_radii: Vec2) -> Ellipse {
         let rotation = self.inner.svd().1;
-        let translation = self.inner.get_translation();
+        let translation = self.inner.translation();
         Ellipse::private_new(translation, new_radii.x, new_radii.y, rotation)
     }
 
@@ -84,7 +90,7 @@ impl Ellipse {
     #[must_use]
     pub fn with_rotation(self, rotation: f64) -> Ellipse {
         let scale = self.inner.svd().0;
-        let translation = self.inner.get_translation();
+        let translation = self.inner.translation();
         Ellipse::private_new(translation, scale.x, scale.y, rotation)
     }
 
@@ -112,7 +118,7 @@ impl Ellipse {
     /// Returns the center of this ellipse.
     #[inline]
     pub fn center(&self) -> Point {
-        let Vec2 { x: cx, y: cy } = self.inner.get_translation();
+        let Vec2 { x: cx, y: cy } = self.inner.translation();
         Point { x: cx, y: cy }
     }
 
@@ -130,6 +136,13 @@ impl Ellipse {
     /// an ellipse with the two radii on the x and y axes.
     pub fn rotation(&self) -> f64 {
         self.inner.svd().1
+    }
+
+    /// Returns the radii and the rotation of this ellipse.
+    ///
+    /// Equivalent to `(self.radii(), self.rotation())` but more efficient.
+    pub fn radii_and_rotation(&self) -> (Vec2, f64) {
+        self.inner.svd()
     }
 
     /// Is this ellipse finite?
@@ -273,7 +286,7 @@ mod tests {
     fn assert_approx_eq(x: f64, y: f64) {
         // Note: we might want to be more rigorous in testing the accuracy
         // of the conversion into Béziers. But this seems good enough.
-        assert!((x - y).abs() < 1e-7, "{} != {}", x, y);
+        assert!((x - y).abs() < 1e-7, "{x} != {y}");
     }
 
     #[test]

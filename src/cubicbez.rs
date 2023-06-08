@@ -1,6 +1,11 @@
+// Copyright 2018 the Kurbo Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Cubic Bézier segments.
 
-use std::ops::{Mul, Range};
+use alloc::vec;
+use alloc::vec::Vec;
+use core::ops::{Mul, Range};
 
 use crate::MAX_EXTREMA;
 use crate::{Line, QuadSpline, Vec2};
@@ -14,6 +19,9 @@ use crate::{
     Affine, Nearest, ParamCurve, ParamCurveArclen, ParamCurveArea, ParamCurveCurvature,
     ParamCurveDeriv, ParamCurveExtrema, ParamCurveNearest, PathEl, Point, QuadBez, Rect, Shape,
 };
+
+#[cfg(not(feature = "std"))]
+use crate::common::FloatFuncs;
 
 const MAX_SPLINE_SPLIT: usize = 100;
 
@@ -217,7 +225,7 @@ impl CubicBez {
         let delta_2 = dt * dt;
         let delta_3 = dt * delta_2;
 
-        std::iter::from_fn(move || {
+        core::iter::from_fn(move || {
             // if storage exists, we use it exclusively
             if let Some(storage) = storage.as_mut() {
                 return storage.pop();
@@ -248,13 +256,13 @@ impl CubicBez {
         (a, b, c, d)
     }
 
+    /// Rust port of cu2qu [calc_cubic_points](https://github.com/fonttools/fonttools/blob/3b9a73ff8379ab49d3ce35aaaaf04b3a7d9d1655/Lib/fontTools/cu2qu/cu2qu.py#L63-L68)
     fn from_parameters(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Self {
-        CubicBez::new(
-            d.to_point(),
-            d.to_point() + (c / 3.0),
-            d.to_point() + (c / 3.0) + (b + c) / 3.0,
-            d.to_point() + (c / 3.0) + (b + c) / 3.0 + a,
-        )
+        let p0 = d.to_point();
+        let p1 = c.div_exact(3.0).to_point() + d;
+        let p2 = (b + c).div_exact(3.0).to_point() + p1.to_vec2();
+        let p3 = (a + d + c + b).to_point();
+        CubicBez::new(p0, p1, p2, p3)
     }
 
     fn subdivide_3(&self) -> (CubicBez, CubicBez, CubicBez) {
@@ -264,13 +272,22 @@ impl CubicBez {
             self.p2.to_vec2(),
             self.p3.to_vec2(),
         );
-        let mid1 = ((8.0 * p0 + 12.0 * p1 + 6.0 * p2 + p3) / 27.0).to_point();
-        let deriv1 = (p3 + 3.0 * p2 - 4.0 * p0) / 27.0;
-        let mid2 = ((p0 + 6.0 * p1 + 12.0 * p2 + 8.0 * p3) / 27.0).to_point();
-        let deriv2 = (4.0 * p3 - 3.0 * p1 - p0) / 27.0;
+        // The original Python cu2qu code here does not use division operator to divide by 27 but
+        // instead uses multiplication by the reciprocal 1 / 27. We want to match it exactly
+        // to avoid any floating point differences, hence in this particular case we do not use div_exact.
+        // I could directly use the Vec2 Div trait (also implemented as multiplication by reciprocal)
+        // but I prefer to be explicit here.
+        // Source: https://github.com/fonttools/fonttools/blob/85c80be/Lib/fontTools/cu2qu/cu2qu.py#L215-L218
+        // See also: https://github.com/linebender/kurbo/issues/272
+        let one_27th = 27.0_f64.recip();
+        let mid1 = ((8.0 * p0 + 12.0 * p1 + 6.0 * p2 + p3) * one_27th).to_point();
+        let deriv1 = (p3 + 3.0 * p2 - 4.0 * p0) * one_27th;
+        let mid2 = ((p0 + 6.0 * p1 + 12.0 * p2 + 8.0 * p3) * one_27th).to_point();
+        let deriv2 = (4.0 * p3 - 3.0 * p1 - p0) * one_27th;
+
         let left = CubicBez::new(
             self.p0,
-            ((2.0 * p0 + p1) / 3.0).to_point(),
+            (2.0 * p0 + p1).div_exact(3.0).to_point(),
             mid1 - deriv1,
             mid1,
         );
@@ -278,13 +295,15 @@ impl CubicBez {
         let right = CubicBez::new(
             mid2,
             mid2 + deriv2,
-            ((p2 + 2.0 * p3) / 3.0).to_point(),
+            (p2 + 2.0 * p3).div_exact(3.0).to_point(),
             self.p3,
         );
         (left, mid, right)
     }
 
     /// Does this curve fit inside the given distance from the origin?
+    ///
+    /// Rust port of cu2qu [cubic_farthest_fit_inside](https://github.com/fonttools/fonttools/blob/3b9a73ff8379ab49d3ce35aaaaf04b3a7d9d1655/Lib/fontTools/cu2qu/cu2qu.py#L281)
     fn fit_inside(&self, distance: f64) -> bool {
         if self.p2.to_vec2().hypot() <= distance && self.p1.to_vec2().hypot() <= distance {
             return true;
@@ -610,6 +629,8 @@ impl Iterator for ToQuads {
 /// Convert multiple cubic Bézier curves to quadratic splines.
 ///
 /// Ensures that the resulting splines have the same number of control points.
+///
+/// Rust port of cu2qu [cubic_approx_quadratic](https://github.com/fonttools/fonttools/blob/3b9a73ff8379ab49d3ce35aaaaf04b3a7d9d1655/Lib/fontTools/cu2qu/cu2qu.py#L322)
 pub fn cubics_to_quadratic_splines(curves: &[CubicBez], accuracy: f64) -> Option<Vec<QuadSpline>> {
     let mut result = Vec::new();
     let mut split_order = 0;
@@ -636,6 +657,7 @@ mod tests {
     use crate::{
         cubics_to_quadratic_splines, Affine, CubicBez, Nearest, ParamCurve, ParamCurveArclen,
         ParamCurveArea, ParamCurveDeriv, ParamCurveExtrema, ParamCurveNearest, Point, QuadBez,
+        QuadSpline,
     };
 
     #[test]
@@ -697,10 +719,7 @@ mod tests {
                 let actual_arc = c.subsegment(0.0..t).arclen(accuracy * 0.5);
                 assert!(
                     (arc - actual_arc).abs() < accuracy,
-                    "at accuracy {:e}, wanted {} got {}",
-                    accuracy,
-                    actual_arc,
-                    arc
+                    "at accuracy {accuracy:e}, wanted {actual_arc} got {arc}"
                 );
             }
         }
@@ -711,10 +730,7 @@ mod tests {
         let actual_arc = c.subsegment(0.0..t).arclen(accuracy);
         assert!(
             (arc - actual_arc).abs() < 2.0 * accuracy,
-            "at accuracy {:e}, want {} got {}",
-            accuracy,
-            actual_arc,
-            arc
+            "at accuracy {accuracy:e}, want {actual_arc} got {arc}"
         );
     }
 
@@ -762,9 +778,7 @@ mod tests {
         fn verify(result: Nearest, expected: f64) {
             assert!(
                 (result.t - expected).abs() < 1e-6,
-                "got {:?} expected {}",
-                result,
-                expected
+                "got {result:?} expected {expected}"
             );
         }
         // y = x^3
@@ -823,7 +837,7 @@ mod tests {
                     let p = q.eval(t);
                     let err = (p.y - p.x.powi(3)).abs();
                     worst = worst.max(err);
-                    assert!(err < accuracy, "got {} wanted {}", err, accuracy);
+                    assert!(err < accuracy, "got {err} wanted {accuracy}");
                 }
             }
         }
@@ -918,6 +932,32 @@ mod tests {
     }
 
     #[test]
+    fn cubicbez_approx_spline_div_exact() {
+        // Ensure rounding behavior for division matches fonttools
+        // cu2qu.
+        // See <https://github.com/linebender/kurbo/issues/272>
+        let cubic = CubicBez::new(
+            Point::new(408.0, 321.0),
+            Point::new(408.0, 452.0),
+            Point::new(342.0, 560.0),
+            Point::new(260.0, 560.0),
+        );
+        let spline = cubic.approx_spline(1.0).unwrap();
+        assert_eq!(
+            spline.points(),
+            &[
+                Point::new(408.0, 321.0),
+                // Previous behavior produced 386.49999999999994 for the
+                // y coordinate leading to inconsistent rounding.
+                Point::new(408.0, 386.5),
+                Point::new(368.16666666666663, 495.0833333333333),
+                Point::new(301.0, 560.0),
+                Point::new(260.0, 560.0)
+            ]
+        )
+    }
+
+    #[test]
     fn cubicbez_inflections() {
         let c = CubicBez::new((0., 0.), (0.8, 1.), (0.2, 1.), (1., 0.));
         let inflections = c.inflections();
@@ -931,5 +971,63 @@ mod tests {
         let c = CubicBez::new((0., 0.), (1., 1.), (2., 1.), (3., 0.));
         let inflections = c.inflections();
         assert_eq!(inflections.len(), 0);
+    }
+
+    #[test]
+    fn cubic_to_quadratic_matches_python() {
+        // from https://github.com/googlefonts/fontmake-rs/issues/217
+        let cubic = CubicBez {
+            p0: (796.0, 319.0).into(),
+            p1: (727.0, 314.0).into(),
+            p2: (242.0, 303.0).into(),
+            p3: (106.0, 303.0).into(),
+        };
+
+        // FontTools can approximate this curve successfully in 7 splits, we can too
+        assert!(cubic.approx_spline_n(7, 1.0).is_some());
+
+        // FontTools can solve this with accuracy 0.001, we can too
+        assert!(cubics_to_quadratic_splines(&[cubic], 0.001).is_some());
+    }
+
+    #[test]
+    fn cubics_to_quadratic_splines_matches_python() {
+        // https://github.com/linebender/kurbo/pull/273
+        let light = CubicBez::new((378., 608.), (378., 524.), (355., 455.), (266., 455.));
+        let regular = CubicBez::new((367., 607.), (367., 511.), (338., 472.), (243., 472.));
+        let bold = CubicBez::new(
+            (372.425, 593.05),
+            (372.425, 524.95),
+            (355.05, 485.95),
+            (274., 485.95),
+        );
+        let qsplines = cubics_to_quadratic_splines(&[light, regular, bold], 1.0).unwrap();
+        assert_eq!(
+            qsplines,
+            [
+                QuadSpline::new(vec![
+                    (378.0, 608.0).into(),
+                    (378.0, 566.0).into(),
+                    (359.0833333333333, 496.5).into(),
+                    (310.5, 455.0).into(),
+                    (266.0, 455.0).into(),
+                ]),
+                QuadSpline::new(vec![
+                    (367.0, 607.0).into(),
+                    (367.0, 559.0).into(),
+                    // Previous behavior produced 496.5 for the y coordinate
+                    (344.5833333333333, 499.49999999999994).into(),
+                    (290.5, 472.0).into(),
+                    (243.0, 472.0).into(),
+                ]),
+                QuadSpline::new(vec![
+                    (372.425, 593.05).into(),
+                    (372.425, 559.0).into(),
+                    (356.98333333333335, 511.125).into(),
+                    (314.525, 485.95).into(),
+                    (274.0, 485.95).into(),
+                ]),
+            ]
+        )
     }
 }
